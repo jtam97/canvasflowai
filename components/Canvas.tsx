@@ -666,7 +666,7 @@ export default function Canvas() {
             <p className="text-red-500 text-xs mt-2 text-center">{uploadError}</p>
           )}
           <p className="text-xs text-gray-400 text-center mt-2">
-            Built by <a href="https://justinztam.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 underline">Justin Tam</a> &middot; <a href="https://projects.justinztam.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 underline">Other projects I've built</a>
+            Built by <a href="https://justinztam.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 underline">Justin Tam</a> &middot; <a href="https://projects.justinztam.com" target="_blank" rel="noopener noreferrer" className="hover:text-gray-600 underline">Other projects I have built</a>
           </p>
         </div>
       )}
