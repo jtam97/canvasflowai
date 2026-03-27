@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { PlanningNodeData } from "@/types";
+import { PlanningNodeData, DEMO_PROVIDER, DEMO_MODEL } from "@/types";
 import { useGraphStore } from "@/store/graphStore";
 
 interface PlanningNodeProps {
@@ -23,14 +23,19 @@ export default function PlanningNode({ id, data }: PlanningNodeProps) {
   const deleteNode = useGraphStore((s) => s.deleteNode);
   const addChatMessage = useGraphStore((s) => s.addChatMessage);
   const addTokenUsage = useGraphStore((s) => s.addTokenUsage);
+  const addDemoTokenUsage = useGraphStore((s) => s.addDemoTokenUsage);
+  const checkDemoLimit = useGraphStore((s) => s.checkDemoLimit);
   const provider = useGraphStore((s) => s.provider);
   const model = useGraphStore((s) => s.model);
   const apiKeys = useGraphStore((s) => s.apiKeys);
+  const useDemo = useGraphStore((s) => s.useDemo);
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
   const mode = useGraphStore((s) => s.mode);
 
-  const apiKey = apiKeys[provider];
+  const apiKey = useDemo ? "DEMO" : apiKeys[provider];
+  const activeProvider = useDemo ? DEMO_PROVIDER : provider;
+  const activeModel = useDemo ? DEMO_MODEL : model;
 
   const isEditing = data.isEditing;
   const isExecuting = mode === "executing";
@@ -56,6 +61,18 @@ export default function PlanningNode({ id, data }: PlanningNodeProps) {
 
   const handleChat = useCallback(async () => {
     if (!chatInput.trim() || !apiKey) return;
+
+    if (useDemo) {
+      const { allowed } = checkDemoLimit();
+      if (!allowed) {
+        addChatMessage(id, {
+          role: "assistant",
+          content: "Demo rate limit reached. Add your own API key in Settings for unlimited use.",
+        });
+        return;
+      }
+    }
+
     const message = chatInput.trim();
     setChatInput("");
     setIsChatting(true);
@@ -71,8 +88,8 @@ export default function PlanningNode({ id, data }: PlanningNodeProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           apiKey,
-          provider,
-          model,
+          provider: activeProvider,
+          model: activeModel,
           graph,
           nodeId: id,
           message,
@@ -83,8 +100,12 @@ export default function PlanningNode({ id, data }: PlanningNodeProps) {
       if (json.reply) {
         addChatMessage(id, { role: "assistant", content: json.reply });
       }
+      const totalTokens = (json.usage?.inputTokens ?? 0) + (json.usage?.outputTokens ?? 0);
       if (json.usage) {
-        addTokenUsage(json.usage.inputTokens + json.usage.outputTokens);
+        addTokenUsage(totalTokens);
+      }
+      if (useDemo && totalTokens > 0) {
+        addDemoTokenUsage(totalTokens);
       }
     } catch {
       addChatMessage(id, {
@@ -94,7 +115,7 @@ export default function PlanningNode({ id, data }: PlanningNodeProps) {
     } finally {
       setIsChatting(false);
     }
-  }, [chatInput, apiKey, provider, model, id, nodes, edges, addChatMessage, addTokenUsage]);
+  }, [chatInput, apiKey, activeProvider, activeModel, useDemo, id, nodes, edges, addChatMessage, addTokenUsage, addDemoTokenUsage, checkDemoLimit]);
 
   const lastAssistantMessage = [...data.chatMessages]
     .reverse()

@@ -26,6 +26,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxFileSizeMB: 10,
 };
 
+// Demo mode rate limit: 10,000 tokens per hour
+export const DEMO_TOKENS_PER_HOUR = 10000;
+export const DEMO_PROVIDER: LLMProvider = "gemini";
+export const DEMO_MODEL = "gemini-2.5-flash";
+
 export const PROVIDER_MODELS: Record<LLMProvider, { id: string; label: string }[]> = {
   anthropic: [
     { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },

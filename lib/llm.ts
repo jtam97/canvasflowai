@@ -21,6 +21,22 @@ export interface ToolSchema {
   schema: Record<string, unknown>;
 }
 
+// Resolve demo mode: if apiKey is "DEMO", use env key and force gemini
+function resolveDemo(
+  provider: LLMProvider,
+  model: string,
+  apiKey: string
+): { provider: LLMProvider; model: string; apiKey: string } {
+  if (apiKey === "DEMO") {
+    const demoKey = process.env.DEMO_GEMINI_API_KEY;
+    if (!demoKey || demoKey === "your-gemini-api-key-here") {
+      throw new Error("Demo mode is not configured. Please add your own API key in Settings.");
+    }
+    return { provider: "gemini", model: "gemini-2.5-flash", apiKey: demoKey };
+  }
+  return { provider, model, apiKey };
+}
+
 // --- Unstructured (plain text) calls ---
 
 export async function callLLM(
@@ -30,15 +46,16 @@ export async function callLLM(
   messages: { role: "user" | "assistant"; content: string }[],
   maxTokens: number
 ): Promise<LLMResponse> {
-  switch (provider) {
+  const resolved = resolveDemo(provider, model, apiKey);
+  switch (resolved.provider) {
     case "anthropic":
-      return callAnthropic(model, apiKey, messages, maxTokens);
+      return callAnthropic(resolved.model, resolved.apiKey, messages, maxTokens);
     case "openai":
-      return callOpenAI(model, apiKey, messages, maxTokens);
+      return callOpenAI(resolved.model, resolved.apiKey, messages, maxTokens);
     case "gemini":
-      return callGemini(model, apiKey, messages, maxTokens);
+      return callGemini(resolved.model, resolved.apiKey, messages, maxTokens);
     default:
-      throw new Error(`Unsupported provider: ${provider}`);
+      throw new Error(`Unsupported provider: ${resolved.provider}`);
   }
 }
 
@@ -52,15 +69,16 @@ export async function callLLMStructured<T>(
   maxTokens: number,
   tool: ToolSchema
 ): Promise<LLMStructuredResponse<T>> {
-  switch (provider) {
+  const resolved = resolveDemo(provider, model, apiKey);
+  switch (resolved.provider) {
     case "anthropic":
-      return callAnthropicStructured<T>(model, apiKey, messages, maxTokens, tool);
+      return callAnthropicStructured<T>(resolved.model, resolved.apiKey, messages, maxTokens, tool);
     case "openai":
-      return callOpenAIStructured<T>(model, apiKey, messages, maxTokens, tool);
+      return callOpenAIStructured<T>(resolved.model, resolved.apiKey, messages, maxTokens, tool);
     case "gemini":
-      return callGeminiStructured<T>(model, apiKey, messages, maxTokens, tool);
+      return callGeminiStructured<T>(resolved.model, resolved.apiKey, messages, maxTokens, tool);
     default:
-      throw new Error(`Unsupported provider: ${provider}`);
+      throw new Error(`Unsupported provider: ${resolved.provider}`);
   }
 }
 

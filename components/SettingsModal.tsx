@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useGraphStore } from "@/store/graphStore";
-import { LLMProvider, PROVIDER_MODELS } from "@/types";
+import { LLMProvider, PROVIDER_MODELS, DEMO_TOKENS_PER_HOUR } from "@/types";
 
 type Tab = "providers" | "general";
 
@@ -25,11 +25,15 @@ export default function SettingsModal() {
     apiKeys,
     settings,
     showSettings,
+    useDemo,
+    demoTokensUsed,
+    demoResetTime,
     setShowSettings,
     setProvider,
     setModel,
     setApiKeyForProvider,
     setSettings,
+    setUseDemo,
   } = useGraphStore();
 
   const [tab, setTab] = useState<Tab>("providers");
@@ -38,7 +42,7 @@ export default function SettingsModal() {
 
   if (!showSettings) return null;
 
-  const hasActiveKey = !!apiKeys[provider];
+  const hasActiveKey = useDemo || !!apiKeys[provider];
 
   const handleSave = () => {
     // Save all keys
@@ -53,6 +57,8 @@ export default function SettingsModal() {
   };
 
   const handleProviderSelect = (p: LLMProvider) => {
+    // Selecting a provider deactivates demo mode
+    setUseDemo(false);
     setProvider(p);
     // Auto-select first model for the provider
     const models = PROVIDER_MODELS[p];
@@ -60,6 +66,19 @@ export default function SettingsModal() {
       setModel(models[0].id);
     }
   };
+
+  const handleDemoSelect = () => {
+    setUseDemo(true);
+  };
+
+  // Demo rate limit display
+  const now = Date.now();
+  const demoRemaining =
+    now >= demoResetTime
+      ? DEMO_TOKENS_PER_HOUR
+      : Math.max(0, DEMO_TOKENS_PER_HOUR - demoTokensUsed);
+  const demoResetMinutes =
+    now >= demoResetTime ? 60 : Math.ceil((demoResetTime - now) / 60000);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -108,8 +127,60 @@ export default function SettingsModal() {
           {tab === "providers" && (
             <div className="space-y-5">
               <p className="text-sm text-gray-500">
-                Select a provider and model, then enter your API key. Keys are stored locally in your browser.
+                Try the demo or bring your own API key. Keys are stored locally in your browser.
               </p>
+
+              {/* Demo option */}
+              <button
+                onClick={handleDemoSelect}
+                className={`w-full px-4 py-3 rounded-lg text-left transition-all border-2 ${
+                  useDemo
+                    ? "bg-emerald-50 border-emerald-400 shadow-sm"
+                    : "border-gray-200 hover:border-gray-300 hover:bg-gray-50 opacity-60"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-semibold text-gray-900">
+                      Demo Mode
+                    </span>
+                    <span className="ml-2 text-xs font-medium text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded">
+                      Free
+                    </span>
+                  </div>
+                  {useDemo && (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <circle cx="8" cy="8" r="8" fill="#10b981" />
+                      <path d="M5 8l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Gemini 2.5 Flash &middot; {(DEMO_TOKENS_PER_HOUR / 1000).toFixed(0)}k tokens/hour
+                </p>
+                {useDemo && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-300"
+                        style={{
+                          width: `${Math.min((demoRemaining / DEMO_TOKENS_PER_HOUR) * 100, 100)}%`,
+                          backgroundColor: demoRemaining < 2000 ? "#ef4444" : "#10b981",
+                        }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500 whitespace-nowrap">
+                      {(demoRemaining / 1000).toFixed(1)}k left &middot; resets in {demoResetMinutes}m
+                    </span>
+                  </div>
+                )}
+              </button>
+
+              <div className="relative flex items-center gap-3">
+                <div className="flex-1 h-px bg-gray-200" />
+                <span className="text-xs text-gray-400">or bring your own key</span>
+                <div className="flex-1 h-px bg-gray-200" />
+              </div>
 
               {/* Provider selection */}
               <div className="grid grid-cols-3 gap-2">
@@ -117,10 +188,12 @@ export default function SettingsModal() {
                   <button
                     key={p}
                     onClick={() => handleProviderSelect(p)}
-                    className={`px-3 py-2.5 rounded-lg text-sm font-medium transition-colors border ${
-                      provider === p
-                        ? "bg-blue-50 border-blue-300 text-blue-700"
-                        : "border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50"
+                    className={`px-3 py-2.5 rounded-lg text-sm font-medium transition-all border ${
+                      !useDemo && provider === p
+                        ? "bg-blue-50 border-blue-300 text-blue-700 shadow-sm"
+                        : useDemo
+                          ? "border-gray-200 text-gray-400 hover:border-gray-300 hover:bg-gray-50 opacity-50"
+                          : "border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50 opacity-60"
                     }`}
                   >
                     {PROVIDER_LABELS[p]}
@@ -131,42 +204,47 @@ export default function SettingsModal() {
                 ))}
               </div>
 
-              {/* Model selection */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Model
-                </label>
-                <select
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
-                >
-                  {PROVIDER_MODELS[provider].map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {/* Model selection & API key — only shown when not in demo mode */}
+              {!useDemo && (
+                <>
+                  {/* Model selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Model
+                    </label>
+                    <select
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
+                    >
+                      {PROVIDER_MODELS[provider].map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              {/* API Key input */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  {PROVIDER_LABELS[provider]} API Key
-                </label>
-                <input
-                  type="password"
-                  value={localKeys[provider]}
-                  onChange={(e) =>
-                    setLocalKeys({ ...localKeys, [provider]: e.target.value })
-                  }
-                  placeholder={PROVIDER_PLACEHOLDERS[provider]}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-                <p className="text-xs text-gray-400 mt-1.5">
-                  Your key is stored in your browser and never sent to our servers.
-                </p>
-              </div>
+                  {/* API Key input */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      {PROVIDER_LABELS[provider]} API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={localKeys[provider]}
+                      onChange={(e) =>
+                        setLocalKeys({ ...localKeys, [provider]: e.target.value })
+                      }
+                      placeholder={PROVIDER_PLACEHOLDERS[provider]}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    <p className="text-xs text-gray-400 mt-1.5">
+                      Your key is stored in your browser and never sent to our servers.
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -263,7 +341,7 @@ export default function SettingsModal() {
           )}
           <button
             onClick={handleSave}
-            disabled={!localKeys[provider].trim()}
+            disabled={!useDemo && !localKeys[provider].trim()}
             className="px-5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Save

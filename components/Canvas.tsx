@@ -19,7 +19,7 @@ import * as XLSX from "xlsx";
 import { useGraphStore } from "@/store/graphStore";
 import { buildSerializedGraph, serializeGraph } from "@/lib/serialize";
 import { IRIS_SCHEMA, IRIS_SAMPLE } from "@/lib/irisData";
-import { AppNodeData, CustomDataset, DatasetSchema, PlanningNodeData, Row } from "@/types";
+import { AppNodeData, CustomDataset, DatasetSchema, DEMO_PROVIDER, DEMO_MODEL, PlanningNodeData, Row } from "@/types";
 
 import DatasetNode from "./nodes/DatasetNode";
 import PlanningNode from "./nodes/PlanningNode";
@@ -55,6 +55,7 @@ export default function Canvas() {
     customDataset,
     executionMode,
     isLoading,
+    useDemo,
     onNodesChange,
     onEdgesChange,
     setEdges,
@@ -67,6 +68,8 @@ export default function Canvas() {
     updateNodeData,
     clearOutputNodes,
     addTokenUsage,
+    addDemoTokenUsage,
+    checkDemoLimit,
     setCustomDataset,
     loadSession,
     resetSession,
@@ -83,7 +86,9 @@ export default function Canvas() {
   const [planText, setPlanText] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeKey = apiKeys[provider];
+  const activeKey = useDemo ? "DEMO" : apiKeys[provider];
+  const activeProvider = useDemo ? DEMO_PROVIDER : provider;
+  const activeModel = useDemo ? DEMO_MODEL : model;
 
   useEffect(() => {
     loadSession();
@@ -136,6 +141,19 @@ export default function Canvas() {
 
   const handlePlan = useCallback(async () => {
     if (!question.trim() || !activeKey) return;
+
+    // Check demo rate limit
+    if (useDemo) {
+      const { allowed, remaining } = checkDemoLimit();
+      if (!allowed) {
+        setError(`Demo rate limit reached (0 tokens remaining). Resets hourly. Add your own API key in Settings for unlimited use.`);
+        return;
+      }
+      if (remaining < 500) {
+        setError(`Demo: only ~${remaining} tokens remaining this hour. Add your own API key in Settings for unlimited use.`);
+      }
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -146,8 +164,8 @@ export default function Canvas() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           apiKey: activeKey,
-          provider,
-          model,
+          provider: activeProvider,
+          model: activeModel,
           datasetSchema: activeSchema,
           question: question.trim(),
           existingNodes,
@@ -158,19 +176,20 @@ export default function Canvas() {
       console.log("[Plan Response]", json);
       if (!res.ok) throw new Error(json.error || "Planning failed");
 
+      const totalTokens = (json.usage?.inputTokens ?? 0) + (json.usage?.outputTokens ?? 0);
       if (json.usage) {
-        addTokenUsage(json.usage.inputTokens + json.usage.outputTokens);
+        addTokenUsage(totalTokens);
+      }
+      if (useDemo && totalTokens > 0) {
+        addDemoTokenUsage(totalTokens);
       }
 
       if (json.nodes && Array.isArray(json.nodes)) {
-        // Determine parent: if there are existing nodes and the response specifies branching,
-        // use the suggested parent; otherwise chain from last planning node or dataset root
         const planningNodes = nodes.filter(
           (n) => (n.data as AppNodeData).type === "planning"
         );
         let defaultParentId = "dataset-root";
         if (planningNodes.length > 0) {
-          // Find the last node in the chain (a node that has no children)
           const sourceIds = new Set(edges.map((e) => e.source));
           const leafNodes = planningNodes.filter((n) => !sourceIds.has(n.id));
           defaultParentId = leafNodes.length > 0 ? leafNodes[leafNodes.length - 1].id : planningNodes[planningNodes.length - 1].id;
@@ -194,10 +213,19 @@ export default function Canvas() {
     } finally {
       setIsLoading(false);
     }
-  }, [question, activeKey, provider, model, activeSchema, nodes, edges, setIsLoading, addPlanningNode, addTokenUsage, getExistingPlanContext]);
+  }, [question, activeKey, activeProvider, activeModel, useDemo, activeSchema, nodes, edges, setIsLoading, addPlanningNode, addTokenUsage, addDemoTokenUsage, checkDemoLimit, getExistingPlanContext]);
 
   const handlePreflight = useCallback(async () => {
     if (!activeKey) return;
+
+    if (useDemo) {
+      const { allowed } = checkDemoLimit();
+      if (!allowed) {
+        setError(`Demo rate limit reached. Resets hourly. Add your own API key in Settings.`);
+        return;
+      }
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -206,18 +234,21 @@ export default function Canvas() {
       const res = await fetch("/api/preflight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: activeKey, provider, model, graph }),
+        body: JSON.stringify({ apiKey: activeKey, provider: activeProvider, model: activeModel, graph }),
       });
 
       const json = await res.json();
       console.log("[Preflight Response]", json);
       if (!res.ok) throw new Error(json.error || "Preflight check failed");
 
+      const totalTokens = (json.usage?.inputTokens ?? 0) + (json.usage?.outputTokens ?? 0);
       if (json.usage) {
-        addTokenUsage(json.usage.inputTokens + json.usage.outputTokens);
+        addTokenUsage(totalTokens);
+      }
+      if (useDemo && totalTokens > 0) {
+        addDemoTokenUsage(totalTokens);
       }
 
-      // Apply auto-improved node descriptions if returned
       if (json.improvedNodes && Array.isArray(json.improvedNodes)) {
         for (const improved of json.improvedNodes) {
           if (improved.id && improved.description) {
@@ -238,10 +269,19 @@ export default function Canvas() {
     } finally {
       setIsLoading(false);
     }
-  }, [activeKey, provider, model, nodes, edges, setIsLoading, addTokenUsage, updateNodeData]);
+  }, [activeKey, activeProvider, activeModel, useDemo, nodes, edges, setIsLoading, addTokenUsage, addDemoTokenUsage, checkDemoLimit, updateNodeData]);
 
   const handleExecute = useCallback(async () => {
     if (!activeKey) return;
+
+    if (useDemo) {
+      const { allowed } = checkDemoLimit();
+      if (!allowed) {
+        setError(`Demo rate limit reached. Resets hourly. Add your own API key in Settings.`);
+        return;
+      }
+    }
+
     setPreflightIssues(null);
     setMode("executing");
     setIsLoading(true);
@@ -256,8 +296,8 @@ export default function Canvas() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           apiKey: activeKey,
-          provider,
-          model,
+          provider: activeProvider,
+          model: activeModel,
           maxTokens: settings.maxTokens,
           serializedPrompt: prompt,
           datasetSample: activeSample,
@@ -269,16 +309,18 @@ export default function Canvas() {
       console.log("[Execute Response]", json);
       if (!res.ok) throw new Error(json.error || "Execution failed");
 
+      const totalTokens = (json.usage?.inputTokens ?? 0) + (json.usage?.outputTokens ?? 0);
       if (json.usage) {
-        addTokenUsage(json.usage.inputTokens + json.usage.outputTokens);
+        addTokenUsage(totalTokens);
+      }
+      if (useDemo && totalTokens > 0) {
+        addDemoTokenUsage(totalTokens);
       }
 
       if (executionMode === "plan") {
-        // Plan mode: show the full plan in a modal
         setPlanText(json.plan || "");
         setMode("planning");
       } else {
-        // Calculate mode: create output nodes per step
         if (json.results && Array.isArray(json.results)) {
           for (const result of json.results) {
             addOutputNode(result.nodeId, result.output);
@@ -294,8 +336,9 @@ export default function Canvas() {
     }
   }, [
     activeKey,
-    provider,
-    model,
+    activeProvider,
+    activeModel,
+    useDemo,
     settings.maxTokens,
     activeSchema,
     activeSample,
@@ -307,6 +350,8 @@ export default function Canvas() {
     clearOutputNodes,
     addOutputNode,
     addTokenUsage,
+    addDemoTokenUsage,
+    checkDemoLimit,
   ]);
 
   // File upload handler
@@ -467,116 +512,142 @@ export default function Canvas() {
       )}
 
       {/* Top Toolbar */}
-      <div className="absolute top-0 left-0 right-0 z-10 bg-white/90 backdrop-blur-sm border-b border-gray-200 px-6 py-3 flex items-center gap-4">
-        <h1 className="text-lg font-bold text-gray-900 shrink-0">
-          CanvasFlowAI
-        </h1>
+      <div className="absolute top-0 left-0 right-0 z-10 bg-white/90 backdrop-blur-sm border-b border-gray-200">
+        {/* Main toolbar row */}
+        <div className="px-6 py-3 flex items-center gap-4">
+          <h1 className="text-lg font-bold text-gray-900 shrink-0">
+            CanvasFlowAI
+          </h1>
 
-        {/* Token Usage Bar */}
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="w-32 h-3 bg-gray-200 rounded-full overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-300"
-              style={{
-                width: `${usagePct}%`,
-                backgroundColor:
-                  usagePct > 80 ? "#ef4444" : usagePct > 50 ? "#f59e0b" : "#3b82f6",
-              }}
-            />
-          </div>
-          <span className="text-xs text-gray-500 whitespace-nowrap">
-            {usageK}k / {maxK}
-          </span>
-        </div>
-
-        <div className="flex-1" />
-
-        {/* Execution Mode Toggle */}
-        {mode === "planning" && hasPlanningNodes && (
-          <div className="flex items-center bg-gray-100 rounded-lg p-0.5 shrink-0">
-            <button
-              onClick={() => setExecutionMode("calculate")}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                executionMode === "calculate"
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-              title="Execute analysis on the spot — Claude computes statistics and results directly"
-            >
-              Calculate
-            </button>
-            <button
-              onClick={() => setExecutionMode("plan")}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                executionMode === "plan"
-                  ? "bg-white text-purple-700 shadow-sm"
-                  : "text-gray-500 hover:text-gray-700"
-              }`}
-              title="Generate a detailed implementation plan to paste into your preferred IDE agent (Claude Code, Cursor, etc.)"
-            >
-              Plan
-            </button>
-          </div>
-        )}
-
-        {mode === "executing" && (
-          <div className="flex items-center gap-2 text-blue-600">
-            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm font-medium">
-              {executionMode === "plan" ? "Generating plan..." : "Executing analysis..."}
+          {/* Token Usage Bar */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="w-32 h-3 bg-gray-200 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-300"
+                style={{
+                  width: `${usagePct}%`,
+                  backgroundColor:
+                    usagePct > 80 ? "#ef4444" : usagePct > 50 ? "#f59e0b" : "#3b82f6",
+                }}
+              />
+            </div>
+            <span className="text-xs text-gray-500 whitespace-nowrap">
+              {usageK}k / {maxK}
             </span>
           </div>
-        )}
 
-        {mode === "results" && (
+          {/* Demo indicator */}
+          {useDemo && (
+            <button
+              onClick={() => setShowSettings(true)}
+              className="text-xs text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-md hover:bg-emerald-100 transition-colors shrink-0"
+              title="Using demo mode — click to add your own key"
+            >
+              Demo &middot; Add your key
+            </button>
+          )}
+
+          <div className="flex-1" />
+
+          {/* Execution Mode Toggle */}
+          {mode === "planning" && hasPlanningNodes && (
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5 shrink-0">
+              <button
+                onClick={() => setExecutionMode("calculate")}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  executionMode === "calculate"
+                    ? "bg-white text-blue-700 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+                title="Execute analysis on the spot — Claude computes statistics and results directly"
+              >
+                Calculate
+              </button>
+              <button
+                onClick={() => setExecutionMode("plan")}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  executionMode === "plan"
+                    ? "bg-white text-purple-700 shadow-sm"
+                    : "text-gray-500 hover:text-gray-700"
+                }`}
+                title="Generate a detailed implementation plan to paste into your preferred IDE agent (Claude Code, Cursor, etc.)"
+              >
+                Plan
+              </button>
+            </div>
+          )}
+
+          {mode === "executing" && (
+            <div className="flex items-center gap-2 text-blue-600">
+              <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium">
+                {executionMode === "plan" ? "Generating plan..." : "Executing analysis..."}
+              </span>
+            </div>
+          )}
+
+          {mode === "results" && (
+            <button
+              onClick={() => setMode("planning")}
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors"
+            >
+              Back to planning
+            </button>
+          )}
+
+          {mode === "planning" && hasPlanningNodes && (
+            <button
+              onClick={handlePreflight}
+              disabled={isLoading}
+              className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
+            >
+              Run
+            </button>
+          )}
+
+          {/* Clear button */}
+          {mode === "planning" && hasPlanningNodes && (
+            <button
+              onClick={() => setShowClearConfirm(true)}
+              className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors shrink-0"
+            >
+              Clear
+            </button>
+          )}
+
+          {/* Settings gear button */}
           <button
-            onClick={() => setMode("planning")}
-            className="px-4 py-2 bg-gray-600 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition-colors"
+            onClick={() => setShowSettings(true)}
+            className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
+            title="Settings"
           >
-            Back to planning
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+              <path
+                fillRule="evenodd"
+                d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                clipRule="evenodd"
+              />
+            </svg>
           </button>
-        )}
+        </div>
 
-        {mode === "planning" && hasPlanningNodes && (
-          <button
-            onClick={handlePreflight}
-            disabled={isLoading}
-            className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
-          >
-            Run
-          </button>
-        )}
-
+        {/* Error banner — wraps to show full error text */}
         {error && (
-          <div className="text-red-600 text-sm bg-red-50 px-3 py-1.5 rounded-lg max-w-xs truncate">
-            {error}
+          <div className="px-6 py-2 bg-red-50 border-t border-red-200 flex items-start gap-2">
+            <svg className="w-4 h-4 text-red-500 mt-0.5 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+            <p className="text-sm text-red-700 flex-1">{error}</p>
+            <button
+              onClick={() => setError(null)}
+              className="text-red-400 hover:text-red-600 shrink-0"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 3l8 8M11 3l-8 8" />
+              </svg>
+            </button>
           </div>
         )}
-
-        {/* Clear button */}
-        {mode === "planning" && hasPlanningNodes && (
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors shrink-0"
-          >
-            Clear
-          </button>
-        )}
-
-        {/* Settings gear button */}
-        <button
-          onClick={() => setShowSettings(true)}
-          className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors shrink-0"
-          title="Settings"
-        >
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
-            <path
-              fillRule="evenodd"
-              d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </button>
       </div>
 
       {/* React Flow Canvas */}
@@ -607,10 +678,10 @@ export default function Canvas() {
         />
       </ReactFlow>
 
-      {/* Bottom Prompt Bar */}
+      {/* Bottom Prompt Bar — inset from edges to avoid overlapping Controls (bottom-left) and MiniMap (bottom-right) */}
       {mode === "planning" && (
-        <div className="absolute bottom-0 left-0 right-0 z-10 bg-white/90 backdrop-blur-sm border-t border-gray-200 px-6 py-3">
-          <div className="flex items-center gap-3 max-w-4xl mx-auto">
+        <div className="absolute bottom-2 left-[60px] right-[200px] z-10 bg-white/90 backdrop-blur-sm border border-gray-200 rounded-xl px-5 py-3 shadow-sm">
+          <div className="flex items-center gap-3">
             {/* File upload button */}
             <button
               onClick={() => fileInputRef.current?.click()}

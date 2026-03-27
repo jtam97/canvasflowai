@@ -18,6 +18,9 @@ import {
   LLMProvider,
   AppSettings,
   DEFAULT_SETTINGS,
+  DEMO_TOKENS_PER_HOUR,
+  DEMO_PROVIDER,
+  DEMO_MODEL,
   CustomDataset,
 } from "@/types";
 import { IRIS_SCHEMA } from "@/lib/irisData";
@@ -27,6 +30,9 @@ const STORAGE_KEY_API_KEYS = "adaviz_api_keys";
 const STORAGE_KEY_PROVIDER = "adaviz_provider";
 const STORAGE_KEY_MODEL = "adaviz_model";
 const STORAGE_KEY_SETTINGS = "adaviz_settings";
+const STORAGE_KEY_DEMO_MODE = "adaviz_demo_mode";
+const STORAGE_KEY_DEMO_TOKENS = "adaviz_demo_tokens";
+const STORAGE_KEY_DEMO_RESET = "adaviz_demo_reset";
 // Legacy key for migration
 const STORAGE_KEY_API_KEY_LEGACY = "adaviz_api_key";
 
@@ -65,6 +71,15 @@ interface GraphState {
 
   // Token usage tracking
   tokenUsage: number;
+
+  // Demo mode
+  useDemo: boolean;
+  demoTokensUsed: number;
+  demoResetTime: number; // timestamp when demo tokens reset
+  setUseDemo: (useDemo: boolean) => void;
+  addDemoTokenUsage: (tokens: number) => void;
+  getDemoTokensRemaining: () => number;
+  checkDemoLimit: (estimatedTokens?: number) => { allowed: boolean; remaining: number };
 
   // Custom dataset
   customDataset: CustomDataset | null;
@@ -123,10 +138,51 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   settings: { ...DEFAULT_SETTINGS },
   tokenUsage: 0,
+  useDemo: true, // default to demo mode
+  demoTokensUsed: 0,
+  demoResetTime: Date.now() + 3600000, // 1 hour from now
   customDataset: null,
 
   executionMode: "calculate",
   setExecutionMode: (mode: ExecutionMode) => set({ executionMode: mode }),
+
+  setUseDemo: (useDemo: boolean) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY_DEMO_MODE, JSON.stringify(useDemo));
+    }
+    set({ useDemo });
+  },
+
+  addDemoTokenUsage: (tokens: number) => {
+    const now = Date.now();
+    let { demoTokensUsed, demoResetTime } = get();
+    // Reset if the hour has passed
+    if (now >= demoResetTime) {
+      demoTokensUsed = 0;
+      demoResetTime = now + 3600000;
+    }
+    demoTokensUsed += tokens;
+    if (typeof window !== "undefined") {
+      localStorage.setItem(STORAGE_KEY_DEMO_TOKENS, String(demoTokensUsed));
+      localStorage.setItem(STORAGE_KEY_DEMO_RESET, String(demoResetTime));
+    }
+    set({ demoTokensUsed, demoResetTime });
+  },
+
+  getDemoTokensRemaining: () => {
+    const now = Date.now();
+    const { demoTokensUsed, demoResetTime } = get();
+    if (now >= demoResetTime) return DEMO_TOKENS_PER_HOUR;
+    return Math.max(0, DEMO_TOKENS_PER_HOUR - demoTokensUsed);
+  },
+
+  checkDemoLimit: (estimatedTokens = 0) => {
+    const remaining = get().getDemoTokensRemaining();
+    return {
+      allowed: remaining > estimatedTokens,
+      remaining,
+    };
+  },
 
   showSettings: false,
   setShowSettings: (show) => set({ showSettings: show }),
@@ -154,7 +210,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   getActiveApiKey: () => {
-    const { provider, apiKeys } = get();
+    const { useDemo, provider, apiKeys } = get();
+    if (useDemo) return "DEMO";
     return apiKeys[provider] || null;
   },
 
@@ -259,7 +316,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       type: "planningNode",
       position: {
         x: parentX + existingChildren * 500,
-        y: parentY + 300,
+        y: parentY + 450,
       },
       data: {
         type: "planning",
@@ -304,7 +361,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       type: "planningNode",
       position: {
         x: parentX + existingChildren * 500,
-        y: parentY + 300,
+        y: parentY + 450,
       },
       data: {
         type: "planning",
@@ -491,6 +548,29 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       }
     }
 
+    // Load demo mode
+    const savedDemo = localStorage.getItem(STORAGE_KEY_DEMO_MODE);
+    if (savedDemo !== null) {
+      try {
+        set({ useDemo: JSON.parse(savedDemo) });
+      } catch {
+        // ignore
+      }
+    }
+
+    // Load demo token tracking
+    const savedDemoTokens = localStorage.getItem(STORAGE_KEY_DEMO_TOKENS);
+    const savedDemoReset = localStorage.getItem(STORAGE_KEY_DEMO_RESET);
+    if (savedDemoTokens && savedDemoReset) {
+      const resetTime = Number(savedDemoReset);
+      if (Date.now() >= resetTime) {
+        // Hour has passed, reset
+        set({ demoTokensUsed: 0, demoResetTime: Date.now() + 3600000 });
+      } else {
+        set({ demoTokensUsed: Number(savedDemoTokens), demoResetTime: resetTime });
+      }
+    }
+
     // Load session
     const saved = localStorage.getItem(STORAGE_KEY_SESSION);
     if (saved) {
@@ -502,9 +582,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       }
     }
 
-    // Show settings if no active API key
+    // Show settings if no active API key and not in demo mode
     const state = get();
-    if (!state.apiKeys[state.provider]) {
+    if (!state.useDemo && !state.apiKeys[state.provider]) {
       set({ showSettings: true });
     }
   },
